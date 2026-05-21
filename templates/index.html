@@ -1,0 +1,1326 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MT5 ML Strategy Assistant</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/style.css') }}"
+    />
+    <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
+  </head>
+  <body>
+    <div class="layout">
+      <header class="header">
+        <h1>MT5 ML Strategy Assistant</h1>
+        <p class="subtitle">
+          Connect to MetaTrader 5 on this PC for live candlesticks and ML
+          signals; place market orders when live trading is enabled on the
+          server.
+        </p>
+      </header>
+
+      <section class="panel status-bar" id="mt5-status">
+        <span class="badge" id="badge-pkg">Checking MetaTrader5 package…</span>
+        <span class="badge" id="badge-conn">Terminal…</span>
+        <span class="badge" id="badge-live"
+          >Live orders: {{ "On (LIVE_TRADING_ENABLED)" if live_trading_env else
+          "Off (set LIVE_TRADING_ENABLED=1)" }}</span
+        >
+      </section>
+
+      <section class="panel">
+        <form id="analyze-form" class="form-grid">
+          <label class="field">
+            <span>Symbol</span>
+            <select name="symbol" id="symbol">
+              {% for code, label in symbols %}
+              <option value="{{ code }}">{{ label }} ({{ code }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="field">
+            <span>Chart timeframe</span>
+            <select name="timeframe" id="timeframe">
+              {% for code, label in timeframes %}
+              <option value="{{ code }}">{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="field">
+            <span>Volume (lots, used for execution)</span>
+            <input
+              type="number"
+              name="amount"
+              id="amount"
+              value="0.10"
+              min="0.01"
+              step="0.01"
+            />
+            <small class="muted" id="volume-rule"
+              >Volume rule: min 0.01, step 0.01</small
+            >
+          </label>
+          <label class="field full">
+            <span>MT5 criteria / notes</span>
+            <textarea
+              name="criteria"
+              id="criteria"
+              rows="3"
+              placeholder="Spread limits, session, news filter, max drawdown, etc."
+            ></textarea>
+          </label>
+          <label class="field full">
+            <span>Trading strategy (ML + technical)</span>
+            <select name="strategy" id="strategy">
+              {% for key, label in strategies %}
+              <option value="{{ key }}">{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <div class="field full" id="strategy-params-box">
+            <span>Strategy parameters</span>
+            <div id="strategy-params" class="exec-grid"></div>
+            <small class="muted" id="strategy-params-note"
+              >No custom parameters for this strategy.</small
+            >
+          </div>
+          <label class="field checkbox-field">
+            <input type="checkbox" id="live-chart" checked />
+            <span
+              >Live chart refresh from MT5 (falls back to manual refresh via
+              Analyze if disconnected)</span
+            >
+          </label>
+          <div class="actions full">
+            <button type="submit" id="submit-btn">Analyze</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel scan-panel" id="scan-panel">
+        <div class="scan-head">
+          <h2>Instrument recommendations</h2>
+          <p class="muted small">
+            By default only <strong>forex (currency pairs)</strong> are scanned
+            — stocks, indices, metals, and crypto are excluded. Uncheck
+            <strong>Forex only</strong> to include everything visible in Market
+            Watch. Uses the same timeframe, volume, and notes as above.
+          </p>
+          <div class="scan-controls">
+            <label class="field checkbox-field inline-cb">
+              <input type="checkbox" id="scan-forex-only" checked />
+              <span>Forex only (currency pairs)</span>
+            </label>
+            <label class="field inline">
+              <span>Instruments</span>
+              <select id="scan-instruments">
+                <option value="market_watch" selected>MT5 Market Watch</option>
+                <option value="preset">App preset list only</option>
+              </select>
+            </label>
+            <label class="field inline">
+              <span>Max</span>
+              <input
+                type="number"
+                id="scan-limit"
+                value="96"
+                min="1"
+                max="400"
+                step="1"
+                title="Maximum instruments per scan"
+              />
+            </label>
+
+            <label class="field inline">
+              <span>Max spread ($ @ 1 lot)</span>
+              <input
+                type="number"
+                id="scan-max-spread"
+                value="10"
+                min="0"
+                step="1"
+                title="Skip symbols if estimated one-way spread cost exceeds this (deposit currency). 0 = off."
+              />
+            </label>
+            <label class="field checkbox-field inline-cb">
+              <input type="checkbox" id="auto-trade-enabled" />
+              <span>Auto trading (BUY/SELL)</span>
+            </label>
+
+            <label class="field inline">
+              <span>Profit target ($)</span>
+              <input
+                type="number"
+                id="profit-target"
+                value="0"
+                min="0"
+                step="0.01"
+                title="Stop auto-trading when account profit reaches this amount ($). 0 = off."
+              />
+            </label>
+            <span class="muted small" id="profit-target-hint">
+              (0 = disabled; restarts on next cycle after reset)
+            </span>
+            <label class="field inline">
+              <span>Max trades</span>
+              <input
+                type="number"
+                id="auto-trade-max"
+                value="8"
+                min="1"
+                max="200"
+                step="1"
+                title="Maximum auto-executed trades per cycle, ranked by confidence."
+              />
+            </label>
+            <span
+              class="muted small"
+              id="auto-trade-hint"
+              title="Closes opposite positions per symbol before opening; skips if already long/short the same way. Server SL/TP. MT5 live data only."
+            >
+              (confidence-ranked, flip opposites, same-side skip, MT5)
+            </span>
+            <label class="field checkbox-field inline-cb">
+              <input type="checkbox" id="scan-enabled" checked />
+              <span>Auto-refresh</span>
+            </label>
+            <label class="field inline">
+              <span>Interval</span>
+              <select id="scan-interval">
+                <option value="3000">3 s</option>
+                <option value="5000">5 s</option>
+                <option value="10000">10 s</option>
+                <option value="15000" selected>15 s</option>
+                <option value="30000">30 s</option>
+              </select>
+            </label>
+            <span class="muted small" id="scan-status">Last update: —</span>
+          </div>
+          <p class="muted small auto-trade-statusline" id="auto-trade-status">
+            Auto-trading: off — when enabled, BUY/SELL rows are ranked by
+            confidence and only top N (Max trades) execute.
+          </p>
+        </div>
+        <p class="scan-consensus" id="scan-consensus">Summary: —</p>
+        <div class="scan-table-wrap">
+          <table class="scan-table">
+            <thead>
+              <tr>
+                <th>Instrument</th>
+                <th>Recommended trade</th>
+                <th>Conf.</th>
+                <th>SELL</th>
+                <th>HOLD</th>
+                <th>BUY</th>
+                <th>OHLC</th>
+                <th>Your choice</th>
+              </tr>
+            </thead>
+            <tbody id="scan-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="chart-section panel">
+        <div class="chart-head">
+          <h2>Price (candlesticks)</h2>
+          <span class="muted small" id="chart-hint">Waiting for data…</span>
+        </div>
+        <div id="chart" class="chart-box"></div>
+      </section>
+
+      <section class="panel result-panel">
+        <h2>Model output</h2>
+        <div id="loading" class="loading hidden">Running model…</div>
+        <div id="result-empty" class="muted">
+          Click Analyze or wait for the live chart to load.
+        </div>
+        <div id="result" class="hidden">
+          <div class="action-row">
+            <span class="action-badge" id="action-badge">—</span>
+            <span class="confidence" id="confidence"></span>
+          </div>
+          <div class="probs" id="probs"></div>
+          <p class="note" id="note"></p>
+        </div>
+      </section>
+
+      <section class="panel instructions-panel hidden" id="instructions-panel">
+        <h2>Trading instructions</h2>
+        <p class="instr-summary" id="instr-summary"></p>
+        <ul class="instr-list" id="instr-checklist"></ul>
+        <h3 class="instr-sub">Suggested steps</h3>
+        <ol class="instr-steps" id="instr-steps"></ol>
+        <h3 class="instr-sub">Risk notice</h3>
+        <ul class="instr-risk" id="instr-risk"></ul>
+      </section>
+
+      <section class="panel execute-panel" id="execute-panel">
+        <h2>Execute on MT5 account (market)</h2>
+        <p class="muted small">
+          Requires MT5 open and logged in on Windows. Orders are sent via the
+          Python API to the <strong>currently logged-in account</strong>. The
+          server must allow live trading (env or
+          <code>LIVE_TRADING_ENABLED.txt</code>). After you click
+          <strong>Analyze</strong>, recommended
+          <strong>SL / TP / slippage</strong> are filled from live price,
+          ATR(14) on the chart history, spread, and broker minimum stop —
+          illustrative only, not financial advice.
+        </p>
+        <p class="muted small" id="exec-rationale"></p>
+        <div class="exec-grid">
+          <label class="field">
+            <span>Stop loss SL (0 = none; recommended after Analyze)</span>
+            <input type="number" id="exec-sl" value="0" step="any" />
+          </label>
+          <label class="field">
+            <span
+              >Take profit TP (0 = none; ~2× stop distance for 1:2 R:R)</span
+            >
+            <input type="number" id="exec-tp" value="0" step="any" />
+          </label>
+          <label class="field">
+            <span>Slippage (points; ~2× spread + buffer)</span>
+            <input type="number" id="exec-dev" value="20" min="1" step="1" />
+          </label>
+        </div>
+        <label class="field checkbox-field">
+          <input type="checkbox" id="exec-confirm" />
+          <span
+            >I confirm a market order with the SL/TP/slippage above (real or
+            demo account) and I have read the risk notice.</span
+          >
+        </label>
+        <p class="muted small exec-block-hint" id="exec-block-hint"></p>
+        <div class="exec-actions">
+          <button type="button" id="exec-btn" class="btn-danger" disabled>
+            Execute current recommendation (market)
+          </button>
+          <span class="exec-msg" id="exec-msg"></span>
+        </div>
+      </section>
+    </div>
+
+    <script>
+                              const form = document.getElementById("analyze-form");
+                              const chartEl = document.getElementById("chart");
+                              const loading = document.getElementById("loading");
+                              const resultEmpty = document.getElementById("result-empty");
+                              const resultBox = document.getElementById("result");
+                              const actionBadge = document.getElementById("action-badge");
+                              const confidenceEl = document.getElementById("confidence");
+                              const probsEl = document.getElementById("probs");
+                              const noteEl = document.getElementById("note");
+                              const submitBtn = document.getElementById("submit-btn");
+                              const liveChartEl = document.getElementById("live-chart");
+                              const chartHint = document.getElementById("chart-hint");
+                              const instructionsPanel = document.getElementById("instructions-panel");
+                              const instrSummary = document.getElementById("instr-summary");
+                              const instrChecklist = document.getElementById("instr-checklist");
+                              const instrSteps = document.getElementById("instr-steps");
+                              const instrRisk = document.getElementById("instr-risk");
+                              const execBtn = document.getElementById("exec-btn");
+                              const execMsg = document.getElementById("exec-msg");
+                              const execConfirm = document.getElementById("exec-confirm");
+                              const execRationale = document.getElementById("exec-rationale");
+                              const volumeRule = document.getElementById("volume-rule");
+                              const scanEnabled = document.getElementById("scan-enabled");
+                              const scanIntervalEl = document.getElementById("scan-interval");
+                              const scanInstrumentsEl = document.getElementById("scan-instruments");
+                              const scanLimitEl = document.getElementById("scan-limit");
+                              const scanMaxSpreadEl = document.getElementById("scan-max-spread");
+                              const scanForexOnlyEl = document.getElementById("scan-forex-only");
+                              const scanStatus = document.getElementById("scan-status");
+                              const scanConsensus = document.getElementById("scan-consensus");
+                              const scanTableBody = document.getElementById("scan-table-body");
+                              const autoTradeEnabled = document.getElementById("auto-trade-enabled");
+                              const autoTradeMaxEl = document.getElementById("auto-trade-max");
+                              const autoTradeStatus = document.getElementById("auto-trade-status");
+                              const strategyEl = document.getElementById("strategy");
+                              const strategyParamsEl = document.getElementById("strategy-params");
+                              const strategyParamsNoteEl = document.getElementById("strategy-params-note");
+                              const profitTargetEl = document.getElementById("profit-target");
+                              /** Set when the server has accepted an auto run for this recommendation snapshot (avoids duplicate orders). */
+                              var lastSuccessfulAutoSnapshot = null;
+                              var autoTradeGen = 0;
+                              var autoTradeRunning = false;
+                              var profitTargetHit = false;
+                              var profitTargetResetTimer = null;
+
+                              let chartApi = null;
+                              let series = null;
+                              let liveTimer = null;
+                              let scanTimer = null;
+                              let lastBarTime = null;
+                              /** @type {Record<string, string>} user BUY/HOLD/SELL per symbol code */
+                              let symbolUserOverride = {};
+                              const SCAN_ACTIONS = ["SELL", "HOLD", "BUY"];
+
+                              let state = {
+                                action: null,
+                                symbol: null,
+                                amount: 0.1,
+                                liveTrading: {{ "true" if live_trading_env else "false" }},
+                              };
+                              const strategyParamState = {};
+                              const STRATEGY_PARAM_CONFIG = {
+                                ma_crossover: [
+                                  { key: "sma_fast", label: "SMA fast period", type: "number", min: 2, max: 400, step: 1, default: 20 },
+                                  { key: "sma_slow", label: "SMA slow period", type: "number", min: 3, max: 600, step: 1, default: 50 },
+                                ],
+                                ema_crossover: [
+                                  { key: "ema_fast", label: "EMA fast period", type: "number", min: 2, max: 300, step: 1, default: 12 },
+                                  { key: "ema_slow", label: "EMA slow period", type: "number", min: 3, max: 500, step: 1, default: 26 },
+                                ],
+                                rsi_reversion: [
+                                  { key: "rsi_period", label: "RSI period", type: "number", min: 2, max: 200, step: 1, default: 14 },
+                                  { key: "rsi_low", label: "RSI oversold", type: "number", min: 1, max: 49, step: 0.1, default: 30 },
+                                  { key: "rsi_high", label: "RSI overbought", type: "number", min: 51, max: 99, step: 0.1, default: 70 },
+                                ],
+                                bollinger_reversion: [
+                                  { key: "bb_period", label: "Bollinger period", type: "number", min: 5, max: 300, step: 1, default: 20 },
+                                  { key: "bb_std", label: "Bollinger std dev", type: "number", min: 0.5, max: 6, step: 0.1, default: 2.0 },
+                                ],
+                                macd_signal: [
+                                  { key: "macd_fast", label: "MACD fast EMA", type: "number", min: 2, max: 200, step: 1, default: 12 },
+                                  { key: "macd_slow", label: "MACD slow EMA", type: "number", min: 3, max: 400, step: 1, default: 26 },
+                                  { key: "macd_signal", label: "MACD signal EMA", type: "number", min: 2, max: 200, step: 1, default: 9 },
+                                ],
+                                breakout_20: [
+                                  { key: "donchian_period", label: "Donchian lookback", type: "number", min: 2, max: 500, step: 1, default: 20 },
+                                ],
+                              };
+
+                              function saveCurrentStrategyParamState() {
+                                if (!strategyEl) return;
+                                const key = strategyEl.value;
+                                const cfg = STRATEGY_PARAM_CONFIG[key];
+                                if (!cfg || !cfg.length) return;
+                                strategyParamState[key] = strategyParamState[key] || {};
+                                cfg.forEach(function (f) {
+                                  const el = document.getElementById("sp-" + f.key);
+                                  if (!el) return;
+                                  const v = parseFloat(el.value);
+                                  strategyParamState[key][f.key] = Number.isFinite(v) ? v : f.default;
+                                });
+                              }
+
+                              function getStrategyParamsFromUi() {
+                                if (!strategyEl) return {};
+                                const key = strategyEl.value;
+                                const cfg = STRATEGY_PARAM_CONFIG[key];
+                                if (!cfg || !cfg.length) return {};
+                                const out = {};
+                                cfg.forEach(function (f) {
+                                  const el = document.getElementById("sp-" + f.key);
+                                  if (!el) return;
+                                  const v = parseFloat(el.value);
+                                  out[f.key] = Number.isFinite(v) ? v : f.default;
+                                });
+                                return out;
+                              }
+
+                              function renderStrategyParams() {
+                                if (!strategyEl || !strategyParamsEl || !strategyParamsNoteEl) return;
+                                const key = strategyEl.value;
+                                const cfg = STRATEGY_PARAM_CONFIG[key];
+                                if (!cfg || !cfg.length) {
+                                  strategyParamsEl.innerHTML = "";
+                                  strategyParamsNoteEl.textContent = "No custom parameters for this strategy.";
+                                  return;
+                                }
+                                const saved = strategyParamState[key] || {};
+                                strategyParamsEl.innerHTML = cfg
+                                  .map(function (f) {
+                                    const val = Object.prototype.hasOwnProperty.call(saved, f.key) ? saved[f.key] : f.default;
+                                    return (
+                                      '<label class="field">' +
+                                      "<span>" + escapeHtml(f.label) + "</span>" +
+                                      '<input id="sp-' + escapeHtml(f.key) + '" data-param-key="' + escapeHtml(f.key) +
+                                      '" type="' + escapeHtml(f.type) + '" min="' + String(f.min) + '" max="' + String(f.max) +
+                                      '" step="' + String(f.step) + '" value="' + String(val) + '" />' +
+                                      "</label>"
+                                    );
+                                  })
+                                  .join("");
+                                strategyParamsNoteEl.textContent = "These values are applied to Analyze, Scan, and Auto-trade.";
+                              }
+
+                              function initChart() {
+                                chartApi = LightweightCharts.createChart(chartEl, {
+                                  layout: {
+                                    background: { color: "#0f1419" },
+                                    textColor: "#c8d0da",
+                                  },
+                                  grid: {
+                                    vertLines: { color: "#1e2630" },
+                                    horzLines: { color: "#1e2630" },
+                                  },
+                                  width: chartEl.clientWidth,
+                                  height: 420,
+                                  timeScale: { borderColor: "#2a3441" },
+                                  rightPriceScale: { borderColor: "#2a3441" },
+                                });
+                                series = chartApi.addCandlestickSeries({
+                                  upColor: "#26a69a",
+                                  downColor: "#ef5350",
+                                  borderVisible: false,
+                                  wickUpColor: "#26a69a",
+                                  wickDownColor: "#ef5350",
+                                });
+                                window.addEventListener("resize", () => {
+                                  chartApi.applyOptions({ width: chartEl.clientWidth });
+                                });
+                              }
+
+                              function applyCandles(candles) {
+                                if (!series || !candles.length) return;
+                                const last = candles[candles.length - 1];
+                                const mapRow = (c) => ({
+                                  time: c.time,
+                                  open: c.open,
+                                  high: c.high,
+                                  low: c.low,
+                                  close: c.close,
+                                });
+                                if (lastBarTime === last.time) {
+                                  series.update(mapRow(last));
+                                } else {
+                                  lastBarTime = last.time;
+                                  series.setData(candles.map(mapRow));
+                                }
+                              }
+
+                              async function fetchLiveRates() {
+                                const symbol = document.getElementById("symbol").value;
+                                const timeframe = document.getElementById("timeframe").value;
+                                const res = await fetch(
+                                  "/api/live_rates?" +
+                                    new URLSearchParams({ symbol, timeframe, count: "500" })
+                                );
+                                const data = await res.json();
+                                if (!data.ok || !data.candles || !data.candles.length) {
+                                  chartHint.textContent = data.error || "Could not load live candlesticks";
+                                  return;
+                                }
+                                if (!chartApi) initChart();
+                                applyCandles(data.candles);
+                                chartApi.timeScale().scrollToRealTime();
+                                chartHint.textContent = "Live · " + symbol + " " + timeframe + " · MT5";
+                              }
+
+                              function startLivePolling() {
+                                stopLivePolling();
+                                startProfitTargetWatch();   // ← add this line
+                                if (!liveChartEl.checked) return;
+                                fetchLiveRates();
+                                liveTimer = setInterval(fetchLiveRates, 2000);
+                              }
+
+                              function stopLivePolling() {
+                                if (liveTimer) {
+                                  clearInterval(liveTimer);
+                                  liveTimer = null;
+                                }
+
+
+
+
+                              }
+
+                              function getScanParamObject() {
+                                var limEl = document.getElementById("scan-limit");
+                                var lim = limEl ? parseInt(limEl.value, 10) : 96;
+                                if (!Number.isFinite(lim) || lim < 1) lim = 96;
+                                if (lim > 400) lim = 400;
+                                var instEl = document.getElementById("scan-instruments");
+                                var fxEl = document.getElementById("scan-forex-only");
+                                var spEl = document.getElementById("scan-max-spread");
+                                var forexOnly = fxEl ? fxEl.checked : true;
+                                var maxSpread = spEl ? parseFloat(spEl.value) : 10;
+                                if (!Number.isFinite(maxSpread) || maxSpread < 0) maxSpread = 10;
+                                var maxTrades = autoTradeMaxEl ? parseInt(autoTradeMaxEl.value, 10) : 8;
+                                if (!Number.isFinite(maxTrades) || maxTrades < 1) maxTrades = 8;
+                                if (maxTrades > 200) maxTrades = 200;
+                                return {
+                                  timeframe: document.getElementById("timeframe").value,
+                                  amount: parseFloat(document.getElementById("amount").value) || 0.1,
+                                  criteria: document.getElementById("criteria").value || "",
+                                  strategy: document.getElementById("strategy").value,
+                                  strategy_params: getStrategyParamsFromUi(),
+                                  instruments: instEl ? instEl.value : "market_watch",
+                                  limit: lim,
+                                  max_trades: maxTrades,
+                                  forex_only: forexOnly,
+                                  max_spread_usd: maxSpread,
+                                };
+                              }
+
+                              function scanQueryParams() {
+                                var o = getScanParamObject();
+                                return new URLSearchParams({
+                                  timeframe: o.timeframe,
+                                  amount: String(o.amount),
+                                  criteria: o.criteria,
+                                  strategy: o.strategy,
+                                  strategy_params_json: JSON.stringify(o.strategy_params || {}),
+                                  instruments: o.instruments,
+                                  limit: String(o.limit),
+                                  max_trades: String(o.max_trades),
+                                  forex_only: o.forex_only ? "true" : "false",
+                                  max_spread_usd: String(o.max_spread_usd),
+                                });
+                              }
+
+                              function autoTradeSnapshotFromData(data) {
+                                if (!data || !data.symbols || !data.symbols.length) return "";
+                                return data.symbols
+                                  .filter(function (s) {
+                                    return !s.row_error;
+                                  })
+                                  .map(function (s) {
+                                    return s.symbol + ":" + s.action;
+                                  })
+                                  .sort()
+                                  .join("|");
+                              }
+
+                              async function maybeAutoExecuteAfterScan(data) {
+                                if (!autoTradeStatus) return;
+                                if (!autoTradeEnabled || !autoTradeEnabled.checked) {
+                                  autoTradeStatus.textContent =
+                                    "Auto-trading: off — enable to run top-confidence BUY/SELL from the scan list.";
+                                  return;
+                                }
+                                if (!state.liveTrading) {
+                                  autoTradeStatus.textContent =
+                                    "Auto-trade: blocked — set LIVE_TRADING_ENABLED on the server and restart Flask.";
+                                  return;
+                                }
+
+                                // ↓ NEW: profit target gate (add these 2 lines here)
+                                const targetHit = await checkProfitTarget();
+                                if (targetHit) return;
+
+                                var snap = autoTradeSnapshotFromData(data);
+                                if (snap === lastSuccessfulAutoSnapshot) {
+                                  autoTradeStatus.textContent = "Auto-trade: on — recommendations unchanged, no new orders.";
+                                  return;
+                                }
+                                if (autoTradeRunning) return;
+                                autoTradeRunning = true;
+                                var gen = ++autoTradeGen;
+                                autoTradeStatus.textContent = "Auto-trade: placing orders…";
+                                try {
+                                  var payload = getScanParamObject();
+                                  payload.confirm = "AUTO_EXECUTE";
+                                  var res = await fetch("/api/mt5/auto_execute_scan", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify(payload),
+                                  });
+                                  if (gen !== autoTradeGen) return;
+                                  var ct = res.headers.get("content-type") || "";
+                                  if (!ct.includes("application/json")) {
+                                    autoTradeStatus.textContent =
+                                      "Auto-trade: bad response (HTTP " + res.status + "). Is Flask running?";
+                                    return;
+                                  }
+                                  var out = await res.json();
+                                  if (gen !== autoTradeGen) return;
+                                  if (res.status === 403) {
+                                    autoTradeStatus.textContent = out.message || out.error || "Live trading disabled.";
+                                    return;
+                                  }
+                                  if (out.ok) {
+                                    lastSuccessfulAutoSnapshot = snap;
+                                    var nOk = out.executed_ok != null ? out.executed_ok : 0;
+                                    var nRes = out.results ? out.results.length : 0;
+                                    var mx = out.max_trades != null ? out.max_trades : (autoTradeMaxEl ? autoTradeMaxEl.value : "?");
+                                    var elig = out.eligible_trades != null ? out.eligible_trades : "?";
+                                    autoTradeStatus.textContent =
+                                      "Auto-trade: opened " +
+                                      nOk +
+                                      " new position(s) (" +
+                                      nRes +
+                                      " result rows, eligible " +
+                                      elig +
+                                      ", max " +
+                                      mx +
+                                      "). Ranked by confidence; opposites closed first; same-side skipped.";
+                                  } else {
+                                    autoTradeStatus.textContent =
+                                      "Auto-trade: " + (out.error || out.message || JSON.stringify(out));
+                                  }
+                                } catch (e) {
+                                  autoTradeStatus.textContent = "Auto-trade: " + e;
+                                } finally {
+                                  autoTradeRunning = false;
+                                }
+                              }
+
+                              // ↓ NEW FUNCTION — paste this immediately after the closing } above
+      async function checkProfitTarget() {
+        const target = profitTargetEl ? parseFloat(profitTargetEl.value) : 0;
+        if (!target || target <= 0) {
+          profitTargetHit = false;
+          return false;
+        }
+        if (!autoTradeEnabled || !autoTradeEnabled.checked) return false;
+
+        try {
+          const res = await fetch("/api/mt5/status");
+          const data = await res.json();
+          if (!data.account) return false;
+
+          const balance = parseFloat(data.account.balance) || 0;
+          const equity = parseFloat(data.account.equity) || 0;
+          const profit = equity - balance;
+
+          if (profit >= target) {
+            if (!profitTargetHit) {
+              profitTargetHit = true;
+              autoTradeStatus.textContent =
+                "Auto-trade: PAUSED — account profit $" + profit.toFixed(2) +
+                " hit target $" + target.toFixed(2) + ". Individual trades closed by server. Restarting in 60s…";
+
+              clearTimeout(profitTargetResetTimer);
+              profitTargetResetTimer = setTimeout(function () {
+                profitTargetHit = false;
+                lastSuccessfulAutoSnapshot = null;
+                autoTradeStatus.textContent = "Auto-trade: restarted after profit target reset.";
+              }, 60000);
+            }
+            return true;
+          }
+        } catch (e) {
+          console.error("[ProfitTarget] Error:", e);
+        }
+
+        profitTargetHit = false;
+        return false;
+      }
+
+
+
+             async function syncProfitTargetToServer() {
+        const target = profitTargetEl ? parseFloat(profitTargetEl.value) : 0;
+        const active = autoTradeEnabled && autoTradeEnabled.checked && target > 0;
+        try {
+          await fetch("/api/mt5/profit_target/set", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ target: target || 0, active: active }),
+          });
+        } catch (e) {
+          console.error("[ProfitTarget] Sync failed:", e);
+        }
+      }
+
+
+
+                              function scanTradeSubtitle(s) {
+                                if (s.row_error)
+                                  return "Could not score this symbol: " + String(s.row_error).slice(0, 140);
+                                if (s.action === "BUY") return "Trade bias: long — consider buying";
+                                if (s.action === "SELL") return "Trade bias: short — consider selling";
+                                return "Trade bias: flat — hold / no new entry";
+                              }
+
+                              function renderScanTable(data) {
+                                if (!data || data.ok === false) return;
+                                if (!data.symbols || !data.symbols.length) {
+                                  scanConsensus.textContent = "No instruments returned — check Instruments / Max or MT5.";
+                                  scanTableBody.innerHTML = "";
+                                  return;
+                                }
+                                const vc = data.vote_counts || {};
+                                const maj = data.consensus || "—";
+                                const n = data.consensus_count != null ? data.consensus_count : 0;
+                                const t = data.consensus_total != null ? data.consensus_total : 0;
+                                const strat = data.strategy_label || data.strategy || "";
+                                const m5 = data.mt5_symbol_count != null ? data.mt5_symbol_count : 0;
+                                const syn = data.synthetic_symbol_count != null ? data.synthetic_symbol_count : 0;
+                                var srcLabel =
+                                  data.instruments === "market_watch" ?
+                                    "MT5 Market Watch" :
+                                  data.instruments === "preset_fallback" ?
+                                    "preset list (Market Watch unavailable)" :
+                                    "app preset list";
+                                scanConsensus.textContent =
+                                  "Source: " +
+                                  srcLabel +
+                                  (data.instrument_limit != null ? " · max " + data.instrument_limit : "") +
+                                  " · " +
+                                  (data.forex_only !== false ? "Forex pairs only" : "All asset classes") +
+                                  (data.max_spread_usd > 0 ?
+                                    " · Max spread ≤ $" + data.max_spread_usd + " (est. @ 1 lot)" :
+                                    " · Spread filter off") +
+                                  " · Strategy: " +
+                                  strat +
+                                  " · Majority recommendation: " +
+                                  maj +
+                                  " (" +
+                                  n +
+                                  "/" +
+                                  t +
+                                  ") · SELL " +
+                                  (vc.SELL || 0) +
+                                  " · HOLD " +
+                                  (vc.HOLD || 0) +
+                                  " · BUY " +
+                                  (vc.BUY || 0) +
+                                  " · Bars: " +
+                                  m5 +
+                                  " MT5 / " +
+                                  syn +
+                                  " synthetic";
+                                if (data.scan_note) {
+                                  scanConsensus.textContent += " · Note: " + data.scan_note;
+                                }
+                                scanTableBody.innerHTML = data.symbols
+                                  .map(function (s) {
+                                    const p = s.probs || {};
+                                    const code = s.symbol;
+                                    const userVal =
+                                      Object.prototype.hasOwnProperty.call(symbolUserOverride, code) ?
+                                        symbolUserOverride[code] :
+                                        s.action;
+                                    const ohlcTag =
+                                      s.data_source === "mt5_live" ?
+                                        '<span class="scan-ohlc scan-ohlc-live">MT5</span>' :
+                                        '<span class="scan-ohlc scan-ohlc-syn">Syn</span>';
+                                    const opts = SCAN_ACTIONS.map(function (k) {
+                                      return (
+                                        '<option value="' +
+                                        k +
+                                        '"' +
+                                        (userVal === k ? " selected" : "") +
+                                        ">" +
+                                        k +
+                                        "</option>"
+                                      );
+                                    }).join("");
+                                    return (
+                                      "<tr" +
+                                      (s.row_error ? ' class="scan-row-err"' : "") +
+                                      ">" +
+                                      '<td class="scan-name">' +
+                                      '<span class="scan-code">' +
+                                      escapeHtml(code) +
+                                      "</span>" +
+                                      ' <span class="muted small">' +
+                                      escapeHtml(s.label || "") +
+                                      "</span></td>" +
+                                      '<td class="scan-rec-cell">' +
+                                      '<span class="action-badge action-' +
+                                      s.action +
+                                      '">' +
+                                      s.action +
+                                      "</span>" +
+                                      '<div class="scan-trade-sub muted small">' +
+                                      escapeHtml(scanTradeSubtitle(s)) +
+                                      "</div></td>" +
+                                      '<td class="scan-num">' +
+                                      ((s.confidence || 0) * 100).toFixed(1) +
+                                      "%</td>" +
+                                      '<td class="scan-num">' +
+                                      ((p.SELL || 0) * 100).toFixed(1) +
+                                      "%</td>" +
+                                      '<td class="scan-num">' +
+                                      ((p.HOLD || 0) * 100).toFixed(1) +
+                                      "%</td>" +
+                                      '<td class="scan-num">' +
+                                      ((p.BUY || 0) * 100).toFixed(1) +
+                                      "%</td>" +
+                                      "<td>" +
+                                      ohlcTag +
+                                      "</td>" +
+                                      '<td class="scan-your-choice">' +
+                                      '<select class="symbol-user-choice" data-symbol="' +
+                                      escapeHtml(code) +
+                                      '">' +
+                                      opts +
+                                      "</select></td>" +
+                                      "</tr>"
+                                    );
+                                  })
+                                  .join("");
+                              }
+
+                              async function fetchScanSymbols() {
+                                try {
+                                  const res = await fetch("/api/scan_symbols?" + scanQueryParams());
+                                  const ct = res.headers.get("content-type") || "";
+                                  if (!ct.includes("application/json")) {
+                                    scanConsensus.textContent =
+                                      "Server returned HTML instead of JSON (HTTP " +
+                                      res.status +
+                                      "). Start the app with Python (e.g. python app.py) and open http://127.0.0.1:5000 — do not open index.html directly from disk.";
+                                    scanTableBody.innerHTML = "";
+                                    scanStatus.textContent = "Scan failed — wrong response type.";
+                                    return;
+                                  }
+                                  const data = await res.json();
+                                  if (data.ok === false) {
+                                    scanConsensus.textContent =
+                                      "Scan error: " + (data.error || "unknown") + " — check terminal logs.";
+                                    scanTableBody.innerHTML = "";
+                                    scanStatus.textContent = "Last scan failed.";
+                                    return;
+                                  }
+                                  renderScanTable(data);
+                                  var src =
+                                    data.data_summary === "mixed" ?
+                                      "mixed MT5 + synthetic" :
+                                    data.data_summary === "mt5_live" ?
+                                      "all MT5" :
+                                      "all synthetic";
+                                  scanStatus.textContent =
+                                    "Last update: " +
+                                    new Date().toLocaleTimeString() +
+                                    " · " +
+                                    src;
+                                  await maybeAutoExecuteAfterScan(data);
+                                } catch (e) {
+                                  scanStatus.textContent = "Scan failed: " + e;
+                                }
+                              }
+                               var profitWatchTimer = null;
+
+            function startProfitTargetWatch() {
+              stopProfitTargetWatch();
+              console.log("[ProfitTarget] Watch started");
+              profitWatchTimer = setInterval(async function () {
+                const target = profitTargetEl ? parseFloat(profitTargetEl.value) : 0;
+                if (!target || target <= 0) return;
+                if (!autoTradeEnabled || !autoTradeEnabled.checked) return;
+                await checkProfitTarget();
+              }, 500);
+            }
+
+            function stopProfitTargetWatch() {
+              if (profitWatchTimer) {
+                clearInterval(profitWatchTimer);
+                profitWatchTimer = null;
+              }
+            }
+
+
+                              function startScanPolling() {
+                                stopScanPolling();
+                                if (!scanEnabled || !scanEnabled.checked) return;
+                                const ms = parseInt(scanIntervalEl.value, 10) || 15000;
+                                fetchScanSymbols();
+                                scanTimer = setInterval(fetchScanSymbols, ms);
+                              }
+
+                              function stopScanPolling() {
+                                if (scanTimer) {
+                                  clearInterval(scanTimer);
+                                  scanTimer = null;
+                                }
+                              }
+
+                              function setLoading(on) {
+                                loading.classList.toggle("hidden", !on);
+                                submitBtn.disabled = on;
+                              }
+
+                              function applyOrderRecommendation(rec) {
+                                if (!rec) return;
+                                const slEl = document.getElementById("exec-sl");
+                                const tpEl = document.getElementById("exec-tp");
+                                const devEl = document.getElementById("exec-dev");
+                                if (Object.prototype.hasOwnProperty.call(rec, "sl") && rec.sl !== null && rec.sl !== undefined)
+                                  slEl.value = rec.sl;
+                                if (Object.prototype.hasOwnProperty.call(rec, "tp") && rec.tp !== null && rec.tp !== undefined)
+                                  tpEl.value = rec.tp;
+                                if (rec.deviation != null)
+                                  devEl.value = rec.deviation;
+                                if (execRationale) {
+                                  var extra = "";
+                                  if (rec.entry != null)
+                                    extra += "Reference entry ≈ " + rec.entry + ". ";
+                                  if (rec.stop_distance_price != null)
+                                    extra += "Stop distance ≈ " + rec.stop_distance_price + " (price). ";
+                                  if (rec.risk_reward)
+                                    extra += "R:R target: " + rec.risk_reward + ". ";
+                                  execRationale.textContent = extra + (rec.rationale || "");
+                                }
+                              }
+
+                              function renderResult(pred) {
+                                resultEmpty.classList.add("hidden");
+                                resultBox.classList.remove("hidden");
+                                actionBadge.textContent = pred.action;
+                                actionBadge.className = "action-badge action-" + pred.action;
+                                confidenceEl.textContent =
+                                  "Confidence: " + (pred.confidence * 100).toFixed(1) + "%";
+                                const order = ["SELL", "HOLD", "BUY"];
+                                probsEl.innerHTML = order
+                                  .map(
+                                    (k) =>
+                                      '<span class="prob"><span class="k">' +
+                                      k +
+                                      '</span> <span class="v">' +
+                                      (pred.probs[k] * 100).toFixed(1) +
+                                      "%</span></span>"
+                                  )
+                                  .join("");
+                                noteEl.textContent = pred.note;
+                                state.action = pred.action;
+                                state.symbol = document.getElementById("symbol").value;
+                                state.amount =
+                                  parseFloat(document.getElementById("amount").value) || 0.1;
+                                refreshExecButton();
+                              }
+
+                              function renderInstructions(instr) {
+                                if (!instr) {
+                                  instructionsPanel.classList.add("hidden");
+                                  return;
+                                }
+                                instructionsPanel.classList.remove("hidden");
+                                instrSummary.textContent = instr.summary || "";
+                                instrChecklist.innerHTML = (instr.checklist || [])
+                                  .map((x) => "<li>" + escapeHtml(x) + "</li>")
+                                  .join("");
+                                instrSteps.innerHTML = (instr.steps || [])
+                                  .map((x) => "<li>" + escapeHtml(x) + "</li>")
+                                  .join("");
+                                instrRisk.innerHTML = (instr.risk || [])
+                                  .map((x) => "<li>" + escapeHtml(x) + "</li>")
+                                  .join("");
+                              }
+
+                              function escapeHtml(s) {
+                                const d = document.createElement("div");
+                                d.textContent = s;
+                                return d.innerHTML;
+                              }
+
+                              function refreshExecButton() {
+                                const eligible =
+                                  state.action === "BUY" || state.action === "SELL";
+                                execBtn.disabled =
+                                  !eligible ||
+                                  !state.liveTrading ||
+                                  !execConfirm.checked;
+                                var hint = document.getElementById("exec-block-hint");
+                                if (hint) {
+                                  if (!eligible) {
+                                    hint.textContent =
+                                      state.action == null ?
+                                        "Run Analyze first. The button is only enabled for BUY or SELL (not HOLD)."
+                                      : "Current recommendation is HOLD — no market order.";
+                                  } else if (!state.liveTrading) {
+                                    hint.textContent =
+                                      "Live orders are blocked: set environment LIVE_TRADING_ENABLED=1 or put 1 in LIVE_TRADING_ENABLED.txt in the project folder, then restart Flask.";
+                                  } else if (!execConfirm.checked) {
+                                    hint.textContent = "Tick the confirmation checkbox above to enable Execute.";
+                                  } else {
+                                    hint.textContent = "";
+                                  }
+                                }
+                              }
+
+                              function applyVolumeConstraints(metrics) {
+                                if (!metrics) return;
+                                const amountEl = document.getElementById("amount");
+                                const vmin = Number(metrics.volume_min);
+                                const vmax = Number(metrics.volume_max);
+                                const vstep = Number(metrics.volume_step);
+                                if (Number.isFinite(vmin) && vmin > 0) amountEl.min = String(vmin);
+                                if (Number.isFinite(vmax) && vmax > 0) amountEl.max = String(vmax);
+                                if (Number.isFinite(vstep) && vstep > 0) amountEl.step = String(vstep);
+                                if (volumeRule) {
+                                  let txt = "Volume rule:";
+                                  if (Number.isFinite(vmin)) txt += " min " + vmin;
+                                  if (Number.isFinite(vmax)) txt += ", max " + vmax;
+                                  if (Number.isFinite(vstep)) txt += ", step " + vstep;
+                                  volumeRule.textContent = txt;
+                                }
+                                const cur = parseFloat(amountEl.value);
+                                if (!Number.isFinite(cur) || cur < vmin) amountEl.value = String(vmin);
+                              }
+
+                              async function refreshMt5Status() {
+                                const res = await fetch("/api/mt5/status");
+                                const s = await res.json();
+                                const pkg = document.getElementById("badge-pkg");
+                                const conn = document.getElementById("badge-conn");
+                                pkg.textContent = s.package_installed
+                                  ? "Python package: MetaTrader5 installed"
+                                  : "Python package: MetaTrader5 not installed";
+                                pkg.className = "badge " + (s.package_installed ? "ok" : "warn");
+                                conn.textContent = s.connected
+                                  ? "Terminal: connected · " +
+                                    (s.account ? "Login " + s.account.login + " · " + s.account.server : "")
+                                  : "Terminal: not connected (open MT5 and log in)";
+                                conn.className = "badge " + (s.connected ? "ok" : "warn");
+                                state.liveTrading = !!s.live_trading_enabled;
+                                const liveBadge = document.getElementById("badge-live");
+                                liveBadge.textContent =
+                                  "Live orders: " + (s.live_trading_enabled ? "allowed by server" : "blocked — set LIVE_TRADING_ENABLED");
+                                liveBadge.className = "badge " + (s.live_trading_enabled ? "ok" : "warn");
+                                refreshExecButton();
+                              }
+
+                              form.addEventListener("submit", async (e) => {
+                                e.preventDefault();
+                                setLoading(true);
+                                try {
+                                  const body = {
+                                    symbol: document.getElementById("symbol").value,
+                                    timeframe: document.getElementById("timeframe").value,
+                                    amount: parseFloat(document.getElementById("amount").value) || 0.1,
+                                    criteria: document.getElementById("criteria").value,
+                                    strategy: document.getElementById("strategy").value,
+                                    strategy_params: getStrategyParamsFromUi(),
+                                  };
+                                  const res = await fetch("/api/analyze", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify(body),
+                                  });
+                                  const data = await res.json();
+                                  const candles = Array.isArray(data.candles) ? data.candles : [];
+                                  if (!data.prediction) {
+                                    throw new Error(data.error || "Analyze returned no prediction.");
+                                  }
+                                  // Hide spinner before chart/lightweight-charts work (can be slow or throw in edge cases).
+                                  setLoading(false);
+
+                                  if (!chartApi) initChart();
+                                  lastBarTime = null;
+                                  if (series && candles.length) {
+                                    series.setData(
+                                      candles.map((c) => ({
+                                        time: c.time,
+                                        open: c.open,
+                                        high: c.high,
+                                        low: c.low,
+                                        close: c.close,
+                                      }))
+                                    );
+                                    chartApi.timeScale().fitContent();
+                                  }
+                                  chartHint.textContent =
+                                    (data.data_source === "mt5_live" ? "MT5 history · " : "Synthetic · ") +
+                                    body.symbol +
+                                    " " +
+                                    body.timeframe;
+                                  renderResult(data.prediction);
+                                  applyOrderRecommendation(data.order_recommendation);
+                                  renderInstructions(data.instructions);
+                                  applyVolumeConstraints(data.symbol_metrics);
+                                  startLivePolling();
+                                  fetchScanSymbols();
+                                } catch (err) {
+                                  noteEl.textContent = "Request failed: " + err;
+                                  resultBox.classList.remove("hidden");
+                                  resultEmpty.classList.add("hidden");
+                                } finally {
+                                  setLoading(false);
+                                }
+                              });
+
+                              liveChartEl.addEventListener("change", () => {
+                                if (liveChartEl.checked) startLivePolling();
+                                else stopLivePolling();
+                              });
+
+                              scanEnabled.addEventListener("change", () => {
+                                if (scanEnabled.checked) startScanPolling();
+                                else stopScanPolling();
+                              });
+
+                              if (autoTradeEnabled) {
+                                autoTradeEnabled.addEventListener("change", function () {
+                                  lastSuccessfulAutoSnapshot = null;
+                                   syncProfitTargetToServer();
+                                  if (autoTradeStatus) {
+                                    autoTradeStatus.textContent = autoTradeEnabled.checked
+                                      ? "Auto-trading: on — next refresh executes highest-confidence BUY/SELL rows  up to Max trades."
+                                      : "Auto-trading: off.";
+                                  }
+
+                                   if (autoTradeEnabled.checked) {
+                startProfitTargetWatch();
+              } else {
+                stopProfitTargetWatch();
+                profitTargetHit = false;
+              }
+                                  if (scanEnabled && scanEnabled.checked) fetchScanSymbols();
+                                });
+                              }
+
+
+
+                              if (autoTradeMaxEl) {
+                                autoTradeMaxEl.addEventListener("change", function () {
+                                  lastSuccessfulAutoSnapshot = null;
+                                  if (scanEnabled && scanEnabled.checked) fetchScanSymbols();
+                                });
+                              }
+
+                      if (profitTargetEl) {
+        profitTargetEl.addEventListener("change", function () {
+          profitTargetHit = false;
+          lastSuccessfulAutoSnapshot = null;
+          syncProfitTargetToServer();
+        });
+      }
+
+                              scanIntervalEl.addEventListener("change", () => {
+                                if (scanEnabled.checked) startScanPolling();
+                              });
+
+                              ["symbol", "timeframe", "amount", "criteria"].forEach(function (id) {
+                                const el = document.getElementById(id);
+                                if (!el) return;
+                                el.addEventListener("change", function () {
+                                  if (scanEnabled.checked) startScanPolling();
+                                });
+                              });
+
+                              document.getElementById("strategy").addEventListener("change", function () {
+                                saveCurrentStrategyParamState();
+                                renderStrategyParams();
+                                symbolUserOverride = {};
+                                if (scanEnabled.checked) startScanPolling();
+                              });
+
+                              if (strategyParamsEl) {
+                                strategyParamsEl.addEventListener("change", function () {
+                                  saveCurrentStrategyParamState();
+                                  symbolUserOverride = {};
+                                  if (scanEnabled.checked) startScanPolling();
+                                });
+                              }
+
+                              if (scanInstrumentsEl) {
+                                scanInstrumentsEl.addEventListener("change", function () {
+                                  symbolUserOverride = {};
+                                  if (scanEnabled.checked) startScanPolling();
+                                });
+                              }
+                              if (scanLimitEl) {
+                                scanLimitEl.addEventListener("change", function () {
+                                  symbolUserOverride = {};
+                                  if (scanEnabled.checked) startScanPolling();
+                                });
+                              }
+                              if (scanMaxSpreadEl) {
+                                scanMaxSpreadEl.addEventListener("change", function () {
+                                  symbolUserOverride = {};
+                                  if (scanEnabled.checked) startScanPolling();
+                                });
+                              }
+                              if (scanForexOnlyEl) {
+                                scanForexOnlyEl.addEventListener("change", function () {
+                                  symbolUserOverride = {};
+                                  if (scanEnabled.checked) startScanPolling();
+                                });
+                              }
+
+                              scanTableBody.addEventListener("change", function (e) {
+                                const t = e.target;
+                                if (!t.classList || !t.classList.contains("symbol-user-choice")) return;
+                                const sym = t.getAttribute("data-symbol");
+                                if (sym) symbolUserOverride[sym] = t.value;
+                              });
+
+                              execConfirm.addEventListener("change", refreshExecButton);
+
+                              ["symbol", "strategy"].forEach(function (id) {
+                                var el = document.getElementById(id);
+                                if (!el) return;
+                                el.addEventListener("change", function () {
+                                  state.action = null;
+                                  refreshExecButton();
+                                });
+                              });
+
+                              execBtn.addEventListener("click", async () => {
+                                execMsg.textContent = "";
+                                var sym = document.getElementById("symbol").value;
+                                var act = state.action;
+                                var vol =
+                                  parseFloat(document.getElementById("amount").value) || state.amount || 0.1;
+                                if (!act || (act !== "BUY" && act !== "SELL")) {
+                                  execMsg.textContent =
+                                    "Run Analyze first. Execute only works when the latest result is BUY or SELL.";
+                                  execMsg.className = "exec-msg err";
+                                  return;
+                                }
+                                if (!state.liveTrading) {
+                                  execMsg.textContent =
+                                    "Live trading is disabled on the server (see hint above).";
+                                  execMsg.className = "exec-msg err";
+                                  return;
+                                }
+                                if (!execConfirm.checked) {
+                                  execMsg.textContent = "Tick the confirmation checkbox first.";
+                                  execMsg.className = "exec-msg err";
+                                  return;
+                                }
+                                try {
+                                  const res = await fetch("/api/mt5/execute", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({
+                                      confirm: "EXECUTE",
+                                      symbol: sym,
+                                      volume: vol,
+                                      action: act,
+                                      sl: parseFloat(document.getElementById("exec-sl").value) || 0,
+                                      tp: parseFloat(document.getElementById("exec-tp").value) || 0,
+                                      deviation: parseInt(document.getElementById("exec-dev").value, 10) || 20,
+                                    }),
+                                  });
+                                  var ct = res.headers.get("content-type") || "";
+                                  if (!ct.includes("application/json")) {
+                                    execMsg.textContent =
+                                      "Bad response (HTTP " + res.status + "). Is the Flask server running?";
+                                    execMsg.className = "exec-msg err";
+                                    return;
+                                  }
+                                  const out = await res.json();
+                                  let msg = out.message || out.error || JSON.stringify(out);
+                                  if (out.details) {
+                                    const d = out.details;
+                                    if (d.volume_changed) {
+                                      msg += " | Volume normalized: " + d.requested_volume + " -> " + d.normalized_volume;
+                                    }
+                                    if (d.stops_changed) {
+                                      msg += " | Stops normalized: SL " + d.requested_sl + " -> " + d.normalized_sl +
+                                        ", TP " + d.requested_tp + " -> " + d.normalized_tp;
+                                    }
+                                    if (d.executed_without_stops) {
+                                      msg += " | Deal opened without inline SL/TP (broker rule).";
+                                    }
+                                    if (d.stops_attach_message) {
+                                      msg += " | " + d.stops_attach_message;
+                                    }
+                                  }
+                                  execMsg.textContent = msg;
+                                  execMsg.className = "exec-msg " + (out.ok ? "ok" : "err");
+                                } catch (e) {
+                                  execMsg.textContent = String(e);
+                                  execMsg.className = "exec-msg err";
+                                }
+                              });
+
+                              renderStrategyParams();
+                              initChart();
+                              refreshMt5Status();
+                              startLivePolling();
+                              startScanPolling();
+                              syncProfitTargetToServer();
+    </script>
+  </body>
+</html>
